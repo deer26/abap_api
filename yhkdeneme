@@ -1,0 +1,183 @@
+class YHKDENEME definition
+  public
+  final
+  create public .
+
+public section.
+
+  interfaces IF_HTTP_EXTENSION .
+
+  data STATUS type STRING .
+protected section.
+private section.
+
+  methods GET_MESSAGE
+    returning
+      value(R_MSG) type STRING .
+ENDCLASS.
+
+
+
+CLASS YHKDENEME IMPLEMENTATION.
+
+
+  method GET_MESSAGE.
+      r_msg = me->status.
+  endmethod.
+
+
+  METHOD if_http_extension~handle_request.
+    TYPES : BEGIN OF local_type_response,
+              success TYPE string,
+              msg     TYPE string,
+              data    TYPE zke_tt_kitap,
+            END OF local_type_response.
+
+    DATA : lt_kitap    TYPE TABLE OF zke_kitap,
+           ls_kitap    TYPE zke_kitap,
+           ls_response TYPE local_type_response.
+
+    DATA : lv_cond(72),
+       lt_cond LIKE STANDARD TABLE OF lv_cond.
+    CLEAR  :lv_cond,lt_cond.
+
+    DATA : lo_kitap           TYPE REF TO yhkdeneme,
+           lo_json_serializer TYPE REF TO /ui2/cl_json.
+
+    DATA : l_rc        TYPE i,
+           l_json      TYPE string,
+           l_verb      TYPE string,
+           l_path_info TYPE string,
+           l_resource  TYPE string,
+           l_param_1   TYPE string,
+           l_param_2   TYPE string.
+
+    l_verb = server->request->get_header_field( name = '~request_method' ).
+
+    l_path_info = server->request->get_header_field( name = '~query_string' ).
+    SHIFT l_path_info LEFT BY 1 PLACES.
+    SPLIT l_path_info AT '/' INTO l_resource l_param_1 l_param_2.
+    IF ( l_verb NE 'GET' )  AND ( l_verb NE 'POST' ) AND
+       ( l_verb NE 'PUT' )  AND ( l_verb NE 'DELETE' ).
+      CALL METHOD server->response->set_status( code = '405' reason = 'Method not allowed' ).
+      CALL METHOD server->response->set_header_field( name = 'Allow' value = 'POST,GET,PUT,DELETE' ).
+      EXIT.
+    ENDIF.
+    CASE l_verb.
+      WHEN 'GET'.
+        CLEAR : ls_kitap,
+                ls_response.
+        ls_kitap-kitap_no = l_param_1.
+        ls_kitap-kitap_adi = server->request->get_form_field( 'KITAP_ADI' ).
+        ls_kitap-yazar_no = server->request->get_form_field( 'YAZAR_NO' ).
+
+        IF ls_kitap-kitap_no IS NOT INITIAL.
+          CONCATENATE 'KITAP_NO = ''' ls_kitap-kitap_no '''' INTO lv_cond.
+          APPEND lv_cond TO lt_cond.
+        ENDIF.
+        IF ls_kitap-kitap_adi IS NOT INITIAL.
+          IF lv_cond IS INITIAL.
+            CONCATENATE 'KITAP_ADI LIKE ''%' ls_kitap-kitap_adi '%''' INTO lv_cond.
+            APPEND lv_cond TO lt_cond.
+          ELSE.
+            CONCATENATE 'OR KITAP_ADI LIKE ''%' ls_kitap-kitap_adi '%''' INTO lv_cond.
+            APPEND lv_cond TO lt_cond.
+          ENDIF.
+        ENDIF.
+        IF ls_kitap-yazar_no IS NOT INITIAL.
+          IF lv_cond IS INITIAL.
+            CONCATENATE 'YAZAR_NO LIKE ''%' ls_kitap-yazar_no '%''' INTO lv_cond.
+            APPEND lv_cond TO lt_cond.
+          ELSE.
+            CONCATENATE 'OR YAZAR_NO LIKE ''%' ls_kitap-yazar_no '%''' INTO lv_cond.
+            APPEND lv_cond TO lt_cond.
+          ENDIF.
+        ENDIF.
+        IF lt_cond[] IS NOT INITIAL.
+          SELECT *
+            FROM zke_kitap
+            INTO CORRESPONDING FIELDS OF TABLE lt_kitap
+            WHERE (lt_cond).
+        ELSE.
+          SELECT *
+           FROM zke_kitap
+           INTO CORRESPONDING FIELDS OF TABLE lt_kitap
+           .
+        ENDIF.
+        IF lt_kitap IS NOT INITIAL.
+          ls_response-success = 'True'.
+          ls_response-data[] = lt_kitap[].
+        ELSE.
+          ls_response-success = 'False'.
+          ls_response-msg = lo_kitap->get_message( ).
+        ENDIF.
+      WHEN 'POST' OR 'PUT'.
+        CLEAR : ls_kitap,
+                ls_response,
+                l_rc.
+        DATA json TYPE string.
+        json = server->request->get_cdata( ).
+
+        /ui2/cl_json=>deserialize(
+          EXPORTING
+            json             = json
+          CHANGING
+            data             = ls_response
+        ).
+        READ TABLE ls_response-data INTO DATA(ls_data) INDEX 1.
+        IF sy-subrc EQ 0.
+          IF l_verb EQ 'PUT'.
+            ls_kitap-kitap_no = ls_data-kitap_no.
+          ELSE.
+            SELECT MAX( kitap_no ) FROM zke_kitap INTO ls_kitap-kitap_no.
+            ls_kitap-kitap_no  = ls_kitap-kitap_no + 1.
+          ENDIF.
+          ls_kitap-kitap_adi = ls_data-kitap_adi.
+          CALL FUNCTION 'CONVERSION_EXIT_IDATE_INPUT'
+            EXPORTING
+              input  = ls_data-basim_tarihi
+            IMPORTING
+              output = ls_kitap-basim_tarihi.
+          ls_kitap-fiyat = ls_data-fiyat.
+          ls_kitap-fiyat_birimi = ls_data-fiyat_birimi.
+          ls_kitap-notlar = ls_data-notlar.
+          ls_kitap-isbn = ls_data-isbn.
+          ls_kitap-yazar_no      = ls_data-yazar_no.
+          MODIFY zke_kitap FROM ls_kitap.
+          IF sy-subrc EQ 0.
+            ls_response-success = 'true'.
+            ls_response-msg     = 'Kitap oluşturuldu'.
+          ELSE.
+            ls_response-success = 'false'.
+            ls_response-msg     = lo_kitap->get_message( ).
+          ENDIF.
+        ELSE.
+          ls_response-success = 'false'.
+          ls_response-msg     = lo_kitap->get_message( ).
+        ENDIF.
+      WHEN 'DELETE'.
+        CLEAR : ls_kitap.
+        ls_kitap-kitap_no = l_param_1.
+        IF ls_kitap-kitap_no IS NOT INITIAL.
+          SELECT COUNT(*) FROM zke_kitap WHERE kitap_no EQ ls_kitap-kitap_no.
+          IF sy-subrc   EQ 0.
+            DELETE FROM zke_kitap WHERE kitap_no EQ ls_kitap-kitap_no.
+          ELSE.
+            ls_response-success = 'false'.
+            ls_response-msg     = lo_kitap->get_message( ).
+          ENDIF.
+        ELSE.
+          ls_response-success = 'false'.
+          ls_response-msg     = lo_kitap->get_message( ).
+        ENDIF.
+      WHEN OTHERS.
+    ENDCASE.
+
+    CREATE OBJECT lo_json_serializer.
+    l_json = /ui2/cl_json=>serialize( data = ls_response assoc_arrays = abap_true assoc_arrays_opt = abap_true ).
+    server->response->set_header_field( name = 'Content-Type' value = 'application/json; charset=UTF-8' ).
+    server->response->set_cdata( data = l_json ).
+
+
+  ENDMETHOD.
+ENDCLASS.
